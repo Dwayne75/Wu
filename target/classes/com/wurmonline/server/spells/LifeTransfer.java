@@ -1,0 +1,23 @@
+package com.wurmonline.server.spells;
+
+public class LifeTransfer
+  extends ItemEnchantment
+{
+  public static final int RANGE = 4;
+  
+  LifeTransfer()
+  {
+    super("Life Transfer", 409, 20, 100, 60, 61, 0L);
+    this.targetWeapon = true;
+    this.enchantment = 26;
+    this.effectdesc = "will transfer life to you when harming enemies.";
+    this.description = "heals the wielder when causing damage to an enemy";
+    this.type = 1;
+  }
+}
+
+
+/* Location:              C:\Games\SteamLibrary\steamapps\common\Wurm Unlimited Dedicated Server\server.jar!\target\classes\com\wurmonline\server\spells\LifeTransfer.class
+ * Java compiler version: 8 (52.0)
+ * JD-Core Version:       0.7.1
+ */

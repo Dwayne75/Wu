@@ -1,0 +1,99 @@
+package com.wurmonline.server.support;
+
+import com.wurmonline.server.Players;
+import com.wurmonline.server.players.Player;
+import com.wurmonline.server.players.PlayerVote;
+
+public class VoteQuestionsQueue
+{
+  public static final byte ADD = 0;
+  public static final byte DELETE = 1;
+  public static final byte CLOSE = 2;
+  public static final byte SETCARDID = 3;
+  public static final byte SETARCHIVESTATE = 4;
+  private final byte action;
+  private final int questionId;
+  private VoteQuestion voteQuestion;
+  private long newVoteEnd;
+  private String newTrelloCardId;
+  private byte newArchiveState;
+  
+  public VoteQuestionsQueue(byte aAction, VoteQuestion aVoteQuestion)
+  {
+    this.questionId = aVoteQuestion.getQuestionId();
+    this.voteQuestion = aVoteQuestion;
+    this.action = aAction;
+  }
+  
+  public VoteQuestionsQueue(byte aAction, int aQuestionId)
+  {
+    this.questionId = aQuestionId;
+    this.action = aAction;
+  }
+  
+  public VoteQuestionsQueue(byte aAction, int aQuestionId, long aNewEnd)
+  {
+    this.questionId = aQuestionId;
+    this.action = aAction;
+    this.newVoteEnd = aNewEnd;
+  }
+  
+  public VoteQuestionsQueue(byte aAction, int aQuestionId, String aNewTrelloCardId)
+  {
+    this.questionId = aQuestionId;
+    this.action = aAction;
+    this.newTrelloCardId = aNewTrelloCardId;
+  }
+  
+  public VoteQuestionsQueue(byte aAction, int aQuestionId, byte aNewArchiveState)
+  {
+    this.questionId = aQuestionId;
+    this.action = aAction;
+    this.newArchiveState = aNewArchiveState;
+  }
+  
+  public void action()
+  {
+    switch (this.action)
+    {
+    case 0: 
+      VoteQuestions.addVoteQuestion(this.voteQuestion, true);
+      for (Player p : Players.getInstance().getPlayers()) {
+        if (this.voteQuestion.canVote(p))
+        {
+          p.addPlayerVote(new PlayerVote(p.getWurmId(), this.voteQuestion.getQuestionId(), false, false, false, false));
+          
+          p.gotVotes(true);
+        }
+      }
+      break;
+    case 1: 
+      VoteQuestions.deleteVoteQuestion(this.questionId);
+      break;
+    case 2: 
+      VoteQuestion vq = VoteQuestions.getVoteQuestion(this.questionId);
+      if (vq != null) {
+        vq.closeVoting(this.newVoteEnd);
+      }
+      break;
+    case 3: 
+      VoteQuestion vq1 = VoteQuestions.getVoteQuestion(this.questionId);
+      if (vq1 != null) {
+        vq1.setTrelloCardId(this.newTrelloCardId);
+      }
+      break;
+    case 4: 
+      VoteQuestion vq2 = VoteQuestions.getVoteQuestion(this.questionId);
+      if (vq2 != null) {
+        vq2.setArchiveState(this.newArchiveState);
+      }
+      break;
+    }
+  }
+}
+
+
+/* Location:              C:\Games\SteamLibrary\steamapps\common\Wurm Unlimited Dedicated Server\server.jar!\target\classes\com\wurmonline\server\support\VoteQuestionsQueue.class
+ * Java compiler version: 8 (52.0)
+ * JD-Core Version:       0.7.1
+ */

@@ -1,0 +1,121 @@
+package com.sun.tools.xjc.util;
+
+import java.util.ArrayList;
+import javax.xml.namespace.QName;
+import org.w3c.dom.DOMException;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+public class DOMUtils
+{
+  public static Element getFirstChildElement(Element parent, String nsUri, String localPart)
+  {
+    NodeList children = parent.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++)
+    {
+      Node item = children.item(i);
+      if ((item instanceof Element)) {
+        if ((nsUri.equals(item.getNamespaceURI())) && (localPart.equals(item.getLocalName()))) {
+          return (Element)item;
+        }
+      }
+    }
+    return null;
+  }
+  
+  public static Element[] getChildElements(Element parent, String nsUri, String localPart)
+  {
+    ArrayList a = new ArrayList();
+    NodeList children = parent.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++)
+    {
+      Node item = children.item(i);
+      if ((item instanceof Element)) {
+        if ((nsUri.equals(item.getNamespaceURI())) && (localPart.equals(item.getLocalName()))) {
+          a.add(item);
+        }
+      }
+    }
+    return (Element[])a.toArray(new Element[a.size()]);
+  }
+  
+  public static Element[] getChildElements(Element parent)
+  {
+    ArrayList a = new ArrayList();
+    NodeList children = parent.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++)
+    {
+      Node item = children.item(i);
+      if ((item instanceof Element)) {
+        a.add(item);
+      }
+    }
+    return (Element[])a.toArray(new Element[a.size()]);
+  }
+  
+  public static String getElementText(Element element)
+    throws DOMException
+  {
+    for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
+      if (child.getNodeType() == 3) {
+        return child.getNodeValue();
+      }
+    }
+    return element.getNodeValue();
+  }
+  
+  public static Element getElement(Document parent, String name)
+  {
+    NodeList children = parent.getElementsByTagName(name);
+    if (children.getLength() >= 1) {
+      return (Element)children.item(0);
+    }
+    return null;
+  }
+  
+  public static Element getElement(Document parent, QName qname)
+  {
+    NodeList children = parent.getElementsByTagNameNS(qname.getNamespaceURI(), qname.getLocalPart());
+    if (children.getLength() >= 1) {
+      return (Element)children.item(0);
+    }
+    return null;
+  }
+  
+  public static Element getElement(Document parent, String namespaceURI, String localName)
+  {
+    NodeList children = parent.getElementsByTagNameNS(namespaceURI, localName);
+    if (children.getLength() >= 1) {
+      return (Element)children.item(0);
+    }
+    return null;
+  }
+  
+  public static Element[] getElements(NodeList children)
+  {
+    Element[] elements = null;
+    int len = 0;
+    for (int i = 0; i < children.getLength(); i++)
+    {
+      if (elements == null) {
+        elements = new Element[1];
+      }
+      if (elements.length == len)
+      {
+        Element[] buf = new Element[elements.length + 1];
+        System.arraycopy(elements, 0, buf, 0, elements.length);
+        elements = buf;
+      }
+      elements[(len++)] = ((Element)children.item(i));
+    }
+    return elements;
+  }
+}
+
+
+/* Location:              C:\Games\SteamLibrary\steamapps\common\Wurm Unlimited Dedicated Server\server.jar!\1.0\com\sun\tools\xjc\util\DOMUtils.class
+ * Java compiler version: 2 (46.0)
+ * JD-Core Version:       0.7.1
+ */

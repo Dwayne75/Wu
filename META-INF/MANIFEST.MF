@@ -1,0 +1,12 @@
+Manifest-Version: 1.0
+Implementation-Title: Wurm Server
+git-SHA-1: cbfbe5fdc5ce9566a581b6dd96b1b86ec78ce319
+Implementation-Version: 1.9.0.0
+Built-By: xorit
+Implementation-Vendor-Id: com.wurmonline.server
+Created-By: Apache Maven 3.5.4
+Build-Jdk: 1.8.0_181
+Implementation-URL: http://www.wurmonline.com/
+Implementation-Vendor: CodeClub AB
+Main-Class: com.wurmonline.server.gui.WurmServerGuiMain
+

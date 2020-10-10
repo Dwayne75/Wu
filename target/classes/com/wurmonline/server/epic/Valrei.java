@@ -1,0 +1,1502 @@
+package com.wurmonline.server.epic;
+
+import com.wurmonline.server.DbConnector;
+import com.wurmonline.server.Server;
+import com.wurmonline.server.ServerEntry;
+import com.wurmonline.server.Servers;
+import com.wurmonline.server.WurmId;
+import com.wurmonline.server.creatures.Communicator;
+import com.wurmonline.server.creatures.Creature;
+import com.wurmonline.server.deities.Deities;
+import com.wurmonline.server.deities.Deity;
+import com.wurmonline.server.items.Item;
+import com.wurmonline.server.players.PlayerInfo;
+import com.wurmonline.server.players.PlayerInfoFactory;
+import com.wurmonline.server.utils.DbUtilities;
+import com.wurmonline.server.webinterface.WCValreiMapUpdater;
+import com.wurmonline.server.webinterface.WcEpicEvent;
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+public class Valrei
+  extends HexMap
+{
+  private static Logger logger = Logger.getLogger(Valrei.class.getName());
+  private static final String LOAD_ENTITYDATA = "SELECT * FROM ENTITIES";
+  private static final String LOAD_ENTITYSKILLS = "SELECT * FROM ENTITYSKILLS";
+  
+  private final void loadEntityData()
+  {
+    logger.info("Starting to load Epic Entity Data for Valrei");
+    long start = System.nanoTime();
+    
+    loadControllers();
+    Connection dbcon = null;
+    PreparedStatement ps = null;
+    ResultSet rs = null;
+    try
+    {
+      dbcon = DbConnector.getDeityDbCon();
+      ps = dbcon.prepareStatement("SELECT * FROM ENTITIES");
+      rs = ps.executeQuery();
+      int found = 0;
+      Map<Long, Long> comps = new HashMap();
+      Map<Long, Long> carrs = new HashMap();
+      long number;
+      while (rs.next())
+      {
+        number = rs.getLong("ID");
+        String name = rs.getString("NAME");
+        long companionId = rs.getInt("COMPANION");
+        byte demigodApps = rs.getByte("DEMIGODPLUS");
+        int spawnPoint = rs.getInt("SPAWNPOINT");
+        float attack = rs.getFloat("ATTACK");
+        float vitality = rs.getFloat("VITALITY");
+        
+        float initialAttack = rs.getFloat("INATTACK");
+        float initialVitality = rs.getFloat("INVITALITY");
+        int type = rs.getInt("ENTITYTYPE");
+        long carrier = rs.getLong("CARRIER");
+        int currentHex = rs.getInt("CURRENTHEX");
+        boolean helped = rs.getBoolean("HELPED");
+        long entered = rs.getLong("ENTERED");
+        
+        long leaving = rs.getLong("LEAVING");
+        int targetHex = rs.getInt("TARGETHEX");
+        if (companionId > 0L) {
+          comps.put(Long.valueOf(number), Long.valueOf(companionId));
+        }
+        EpicEntity e = new EpicEntity(this, number, name, type, initialAttack, initialVitality, helped, entered, leaving, targetHex);
+        
+        e.setAttack(attack, true);
+        e.setVitality(vitality, true);
+        if (e != null)
+        {
+          e.setDemigodsToAppoint(demigodApps);
+          
+          MapHex mh = getMapHex(spawnPoint);
+          if (mh != null) {
+            if ((!mh.isSpawnFor(number)) && 
+              (!mh.isSpawn())) {
+              mh.setSpawnEntityId(number);
+            }
+          }
+          if (carrier > 0L)
+          {
+            EpicEntity carr = getEntity(carrier);
+            if (carr != null) {
+              e.setCarrier(carr, true, true, false);
+            } else {
+              carrs.put(Long.valueOf(number), Long.valueOf(carrier));
+            }
+          }
+          if ((currentHex > 0) && (!e.isPlayerGod()))
+          {
+            MapHex hex = getMapHex(currentHex);
+            if (hex != null) {
+              e.setMapHex(hex, true);
+            }
+          }
+        }
+        found++;
+      }
+      for (Map.Entry<Long, Long> carr : carrs.entrySet())
+      {
+        EpicEntity e = getEntity(((Long)carr.getKey()).longValue());
+        if (e != null)
+        {
+          EpicEntity carrier = getEntity(((Long)carr.getValue()).longValue());
+          if (carrier != null) {
+            e.setCarrier(carrier, true, true, false);
+          }
+        }
+      }
+      for (Map.Entry<Long, Long> coma : comps.entrySet())
+      {
+        EpicEntity e = getEntity(((Long)coma.getKey()).longValue());
+        if (e != null)
+        {
+          EpicEntity companion = getEntity(((Long)coma.getValue()).longValue());
+          if (companion != null)
+          {
+            logger.log(Level.INFO, e.getName() + " setting companion " + companion.getName());
+            e.setCompanion(companion, true);
+          }
+        }
+      }
+      if (found == 0) {
+        createEntities();
+      }
+    }
+    catch (SQLException sqx)
+    {
+      long end;
+      logger.log(Level.WARNING, sqx.getMessage(), sqx);
+    }
+    finally
+    {
+      long end;
+      DbUtilities.closeDatabaseObjects(ps, rs);
+      DbConnector.returnConnection(dbcon);
+      
+      long end = System.nanoTime();
+      logger.info("Loading Epic Entity data for Valrei took " + (float)(end - start) / 1000000.0F + " ms");
+    }
+    loadVisitedHexes();
+  }
+  
+  private final void loadEntitySkills()
+  {
+    logger.info("Starting to load Epic Entity Skill Data");
+    long start = System.nanoTime();
+    
+    Connection dbcon = null;
+    PreparedStatement ps = null;
+    ResultSet rs = null;
+    try
+    {
+      dbcon = DbConnector.getDeityDbCon();
+      ps = dbcon.prepareStatement("SELECT * FROM ENTITYSKILLS");
+      rs = ps.executeQuery();
+      
+      int found = 0;
+      long entityId;
+      int skillId;
+      while (rs.next())
+      {
+        entityId = rs.getLong("ENTITYID");
+        skillId = rs.getInt("SKILLID");
+        float defaultVal = rs.getFloat("DEFAULTVAL");
+        float currentVal = rs.getFloat("CURRENTVAL");
+        
+        EpicEntity e = getEntity(entityId);
+        if (e != null)
+        {
+          e.setSkill(skillId, defaultVal, currentVal);
+          found++;
+        }
+      }
+      if (found == 0)
+      {
+        setEntityDefaultSkills();
+        for (EpicEntity e : getAllEntities()) {
+          e.createAndSaveSkills();
+        }
+      }
+    }
+    catch (SQLException sqx)
+    {
+      long end;
+      logger.log(Level.WARNING, sqx.getMessage(), sqx);
+    }
+    finally
+    {
+      long end;
+      DbUtilities.closeDatabaseObjects(ps, rs);
+      DbConnector.returnConnection(dbcon);
+      
+      long end = System.nanoTime();
+      logger.info("Loading Epic Entity Skill Data took " + (float)(end - start) / 1000000.0F + " ms");
+    }
+  }
+  
+  private final void createEntities()
+  {
+    logger.info("Starting to create Epic Entities for Valrei");
+    long start = System.nanoTime();
+    
+    EpicEntity Fo = new EpicEntity(this, 1L, "Fo", 0, 6.0F, 7.0F);
+    EpicEntity Vynora = new EpicEntity(this, 3L, "Vynora", 6, 6.0F, 7.0F);
+    Fo.setCompanion(Vynora);
+    Vynora.setCompanion(Fo);
+    EpicEntity Magranon = new EpicEntity(this, 2L, "Magranon", 0, 6.0F, 7.0F);
+    EpicEntity Libila = new EpicEntity(this, 4L, "Libila", 0, 6.0F, 7.0F);
+    
+    EpicEntity Nogump = new EpicEntity(this, 6L, "Nogump", 6, 4.0F, 4.0F);
+    
+    Nogump.setCompanion(Vynora);
+    EpicEntity Walnut = new EpicEntity(this, 7L, "Walnut", 6, 6.0F, 4.0F);
+    Walnut.setCompanion(Fo);
+    EpicEntity Pharmakos = new EpicEntity(this, 8L, "Pharmakos", 6, 3.0F, 3.0F);
+    Pharmakos.setCompanion(Libila);
+    EpicEntity Jackal = new EpicEntity(this, 9L, "Jackal", 6, 5.0F, 3.0F);
+    Jackal.setCompanion(Magranon);
+    
+    EpicEntity DeathCrawler = new EpicEntity(this, 10L, "The Deathcrawler", 5, 6.0F, 3.0F);
+    
+    EpicEntity Scavenger = new EpicEntity(this, 11L, "The Scavenger", 5, 2.0F, 6.0F);
+    
+    EpicEntity DirtMaw = new EpicEntity(this, 12L, "The Dirtmaw Giant", 5, 5.0F, 4.0F);
+    
+    setEntityDefaultSkills();
+    
+    EpicEntity[] allents = getAllEntities();
+    for (EpicEntity e : allents)
+    {
+      MapHex mh = getSpawnHex(e);
+      int sp = 0;
+      if (mh != null) {
+        sp = mh.getId();
+      }
+      e.createEntity(sp);
+      EpicEntity comp = e.getCompanion();
+      long cid = 0L;
+      if (comp != null) {
+        cid = comp.getId();
+      }
+      e.setCompanionForEntity(cid);
+    }
+    long end = System.nanoTime();
+    logger.info("Creating Epic Entities for Valrei took " + (float)(end - start) / 1000000.0F + " ms");
+  }
+  
+  public void setEntityDefaultSkills(EpicEntity entity)
+  {
+    if (entity == null) {
+      return;
+    }
+    if (entity.getId() == 1L)
+    {
+      entity.addSkill(102, 60.0F);
+      entity.addSkill(103, 45.0F);
+      entity.addSkill(104, 55.0F);
+      entity.addSkill(100, 45.0F);
+      entity.addSkill(101, 50.0F);
+      entity.addSkill(105, 40.0F);
+      entity.addSkill(106, 65.0F);
+    }
+    else if (entity.getId() == 3L)
+    {
+      entity.addSkill(102, 40.0F);
+      entity.addSkill(103, 50.0F);
+      entity.addSkill(104, 45.0F);
+      entity.addSkill(100, 65.0F);
+      entity.addSkill(101, 45.0F);
+      entity.addSkill(105, 60.0F);
+      entity.addSkill(106, 55.0F);
+    }
+    else if (entity.getId() == 2L)
+    {
+      entity.addSkill(102, 65.0F);
+      entity.addSkill(103, 60.0F);
+      entity.addSkill(104, 50.0F);
+      entity.addSkill(100, 40.0F);
+      entity.addSkill(101, 45.0F);
+      entity.addSkill(105, 55.0F);
+      entity.addSkill(106, 45.0F);
+    }
+    else if (entity.getId() == 4L)
+    {
+      entity.addSkill(102, 50.0F);
+      entity.addSkill(103, 65.0F);
+      entity.addSkill(104, 45.0F);
+      entity.addSkill(100, 60.0F);
+      entity.addSkill(101, 40.0F);
+      entity.addSkill(105, 45.0F);
+      entity.addSkill(106, 55.0F);
+    }
+    else if (entity.getId() == 6L)
+    {
+      entity.addSkill(102, 45.0F);
+      entity.addSkill(103, 30.0F);
+      entity.addSkill(104, 40.0F);
+      entity.addSkill(100, 25.0F);
+      entity.addSkill(101, 30.0F);
+      entity.addSkill(105, 50.0F);
+      entity.addSkill(106, 35.0F);
+    }
+    else if (entity.getId() == 7L)
+    {
+      entity.addSkill(102, 50.0F);
+      entity.addSkill(103, 40.0F);
+      entity.addSkill(104, 45.0F);
+      entity.addSkill(100, 30.0F);
+      entity.addSkill(101, 25.0F);
+      entity.addSkill(105, 35.0F);
+      entity.addSkill(106, 30.0F);
+    }
+    else if (entity.getId() == 8L)
+    {
+      entity.addSkill(102, 30.0F);
+      entity.addSkill(103, 35.0F);
+      entity.addSkill(104, 30.0F);
+      entity.addSkill(100, 45.0F);
+      entity.addSkill(101, 40.0F);
+      entity.addSkill(105, 50.0F);
+      entity.addSkill(106, 25.0F);
+    }
+    else if (entity.getId() == 9L)
+    {
+      entity.addSkill(102, 40.0F);
+      entity.addSkill(103, 30.0F);
+      entity.addSkill(104, 50.0F);
+      entity.addSkill(100, 35.0F);
+      entity.addSkill(101, 45.0F);
+      entity.addSkill(105, 25.0F);
+      entity.addSkill(106, 30.0F);
+    }
+    else if (entity.getId() == 10L)
+    {
+      entity.addSkill(102, 60.0F);
+      entity.addSkill(103, 25.0F);
+      entity.addSkill(104, 45.0F);
+      entity.addSkill(100, 20.0F);
+      entity.addSkill(101, 30.0F);
+      entity.addSkill(105, 50.0F);
+      entity.addSkill(106, 40.0F);
+    }
+    else if (entity.getId() == 11L)
+    {
+      entity.addSkill(102, 40.0F);
+      entity.addSkill(103, 60.0F);
+      entity.addSkill(104, 30.0F);
+      entity.addSkill(100, 50.0F);
+      entity.addSkill(101, 25.0F);
+      entity.addSkill(105, 45.0F);
+      entity.addSkill(106, 20.0F);
+    }
+    else if (entity.getId() == 12L)
+    {
+      entity.addSkill(102, 50.0F);
+      entity.addSkill(103, 40.0F);
+      entity.addSkill(104, 45.0F);
+      entity.addSkill(100, 25.0F);
+      entity.addSkill(101, 20.0F);
+      entity.addSkill(105, 60.0F);
+      entity.addSkill(106, 30.0F);
+    }
+    else if (entity.getId() == 5L)
+    {
+      entity.addSkill(102, 70.0F);
+      entity.addSkill(103, 70.0F);
+      entity.addSkill(104, 70.0F);
+      entity.addSkill(100, 60.0F);
+      entity.addSkill(101, 60.0F);
+      entity.addSkill(105, 50.0F);
+      entity.addSkill(106, 50.0F);
+    }
+  }
+  
+  private final void setEntityDefaultSkills()
+  {
+    EpicEntity foEntity = getEntity(1L);
+    EpicEntity vynEntity = getEntity(3L);
+    EpicEntity magEntity = getEntity(2L);
+    EpicEntity libEntity = getEntity(4L);
+    EpicEntity nogumpEntity = getEntity(6L);
+    EpicEntity walnutEntity = getEntity(7L);
+    EpicEntity pharEntity = getEntity(8L);
+    EpicEntity jackalEntity = getEntity(9L);
+    EpicEntity deathEntity = getEntity(10L);
+    EpicEntity scavEntity = getEntity(11L);
+    EpicEntity dirtEntity = getEntity(12L);
+    EpicEntity wurmEntity = getEntity(5L);
+    
+    setEntityDefaultSkills(foEntity);
+    setEntityDefaultSkills(vynEntity);
+    setEntityDefaultSkills(magEntity);
+    setEntityDefaultSkills(libEntity);
+    setEntityDefaultSkills(nogumpEntity);
+    setEntityDefaultSkills(walnutEntity);
+    setEntityDefaultSkills(pharEntity);
+    setEntityDefaultSkills(jackalEntity);
+    setEntityDefaultSkills(deathEntity);
+    setEntityDefaultSkills(scavEntity);
+    setEntityDefaultSkills(dirtEntity);
+    setEntityDefaultSkills(wurmEntity);
+  }
+  
+  public Valrei()
+  {
+    super("Valrei");
+    logger.info("Creating Valrei");
+    
+    MapHex v1 = new MapHex(this, 1, "Faltersteps", 2.0F, 0);
+    v1.addNearHexes(2, 3, 4, 54, 53, 55);
+    v1.setPresenceStringOne(" is traversing the ");
+    v1.setPrepositionString(" at the ");
+    v1.setHomeEntityId(3L);
+    MapHex v2 = new MapHex(this, 2, "Shaded Depths of Uttacha", 1.0F, 0);
+    v2.addNearHexes(55, 3, 1, 5, 6, 54);
+    v2.setPresenceStringOne(" is wallowing in the ");
+    v2.setPrepositionString(" down in the ");
+    v2.setHomeEntityId(3L);
+    MapHex v3 = new MapHex(this, 3, "The Drown", 1.0F, 0);
+    v3.addNearHexes(1, 2, 4, 6, 7, 8);
+    v3.setSpawnEntityId(3L);
+    v3.setPresenceStringOne(" is trying to survive in ");
+    v3.setPrepositionString(" deep down in ");
+    v3.setHomeEntityId(3L);
+    MapHex v4 = new MapHex(this, 4, "Nogump The Dirty", 1.0F, 0);
+    v4.addNearHexes(1, 3, 8, 9, 52, 53);
+    v4.setPresenceStringOne(" is visiting ");
+    v4.setPrepositionString(" at ");
+    v4.setHomeEntityId(3L);
+    v4.setSpawnEntityId(6L);
+    MapHex v5 = new MapHex(this, 5, "Altars Of Contemplation", 1.0F, 4);
+    v5.addNearHexes(2, 10, 11, 6, 55, 56);
+    v5.setPresenceStringOne(" marvels at the ");
+    v5.setPrepositionString(" at the ");
+    v5.setHomeEntityId(3L);
+    MapHex v6 = new MapHex(this, 6, "Brokeneyes", 3.0F, 0);
+    v6.addNearHexes(2, 5, 11, 12, 7, 3);
+    v6.setPresenceStringOne(" is climbing the ");
+    v6.setPrepositionString(" at the ");
+    v6.setHomeEntityId(3L);
+    MapHex v7 = new MapHex(this, 7, "Firejaw", 3.0F, 2);
+    v7.addNearHexes(3, 6, 12, 13, 14, 8);
+    v7.setPresenceStringOne(" is trying to survive the ");
+    v7.setPrepositionString(" at the ");
+    v7.setHomeEntityId(3L);
+    MapHex v8 = new MapHex(this, 8, "The Shift", 1.0F, 5);
+    v8.addNearHexes(4, 3, 7, 14, 15, 9);
+    v8.setPresenceStringOne(" is exploring ");
+    v8.setHomeEntityId(3L);
+    MapHex v9 = new MapHex(this, 9, "Valreis Worried Brow", 1.0F, 0);
+    v9.addNearHexes(4, 8, 15, 16, 51, 52);
+    v9.setPresenceStringOne(" lingers at ");
+    v9.setHomeEntityId(3L);
+    MapHex v10 = new MapHex(this, 10, "Plains Of Hidden Thoughts", 1.0F, 0);
+    v10.addNearHexes(5, 11, 17, 55, 54, 56);
+    v10.setPresenceStringOne(" wanders the ");
+    
+    v10.setPrepositionString(" on the ");
+    MapHex v11 = new MapHex(this, 11, "Windswept Heights", 1.0F, 0);
+    v11.addNearHexes(5, 10, 17, 18, 12, 6);
+    v11.setPresenceStringOne(" crosses the ");
+    
+    v11.setPrepositionString(" on the ");
+    MapHex v12 = new MapHex(this, 12, "Scary Old Trees", 1.0F, 0);
+    v12.addNearHexes(6, 11, 18, 19, 13, 7);
+    v12.setPresenceStringOne(" walks among the ");
+    
+    v12.setPrepositionString(" under the ");
+    MapHex v13 = new MapHex(this, 13, "Really Bad Lands", 2.0F, 1);
+    v13.addNearHexes(7, 12, 19, 20, 21, 14);
+    v13.setPresenceStringOne(" is struggling in the ");
+    
+    v13.setPrepositionString(" in the ");
+    v13.setSpawnEntityId(5L);
+    v13.setHomeEntityId(5L);
+    MapHex v14 = new MapHex(this, 14, "Beastwatch Range", 2.0F, 0);
+    v14.addNearHexes(8, 7, 13, 21, 22, 15);
+    v14.setPresenceStringOne(" is surveying at ");
+    
+    v14.setPrepositionString(" at ");
+    MapHex v15 = new MapHex(this, 15, "The Nobody", 2.0F, 0);
+    v15.addNearHexes(9, 8, 14, 22, 23, 16);
+    v15.setPresenceStringOne(" visits ");
+    v15.setPrepositionString(" at ");
+    MapHex v16 = new MapHex(this, 16, "Who's There Forest", 1.0F, 0);
+    v16.addNearHexes(9, 15, 23, 43, 51, 42);
+    v16.setPresenceStringOne(" is wandering ");
+    
+    v16.setPrepositionString(" in ");
+    MapHex v17 = new MapHex(this, 17, "Diamond Mines", 2.0F, 1);
+    v17.addNearHexes(10, 24, 25, 18, 11, 50);
+    v17.setPresenceStringOne(" is searching the ");
+    v17.setHomeEntityId(2L);
+    MapHex v18 = new MapHex(this, 18, "Jeopardy Hunt", 1.0F, 0);
+    v18.addNearHexes(11, 17, 25, 26, 19, 12);
+    v18.setPresenceStringOne(" is hunting at the ");
+    v18.setHomeEntityId(2L);
+    MapHex v19 = new MapHex(this, 19, "Dying Plateau", 1.0F, 0);
+    v19.addNearHexes(12, 18, 26, 27, 20, 13);
+    v19.setPresenceStringOne(" is traversing the ");
+    MapHex v20 = new MapHex(this, 20, "Skyrisen Range", 2.0F, 0);
+    v20.addNearHexes(13, 19, 27, 28, 29, 21);
+    v20.setPresenceStringOne(" is climbing the ");
+    MapHex v21 = new MapHex(this, 21, "Brittlerock Mountains", 2.0F, 0);
+    v21.addNearHexes(14, 13, 20, 29, 30, 22);
+    v21.setPresenceStringOne(" defies the thunderstorms at ");
+    MapHex v22 = new MapHex(this, 22, "Loft Despair", 1.0F, 0);
+    v22.addNearHexes(15, 14, 21, 30, 31, 23);
+    v22.setPresenceStringOne(" stands at ");
+    v22.setHomeEntityId(4L);
+    v22.setSpawnEntityId(8L);
+    MapHex v23 = new MapHex(this, 23, "The Dark Songs Forest", 1.0F, 0);
+    v23.addNearHexes(16, 15, 22, 31, 32, 43);
+    v23.setPresenceStringOne(" listens at ");
+    v23.setHomeEntityId(4L);
+    MapHex v24 = new MapHex(this, 24, "Jackal's Sanctuary", 1.0F, 0);
+    v24.addNearHexes(17, 33, 25, 49, 50, 57);
+    v24.setPresenceStringOne(" visits ");
+    v24.setHomeEntityId(2L);
+    v24.setSpawnEntityId(9L);
+    MapHex v25 = new MapHex(this, 25, "Castle Glittercrown", 1.0F, 0);
+    v25.addNearHexes(17, 24, 33, 34, 26, 18);
+    v25.setPresenceStringOne(" visits ");
+    v25.setSpawnEntityId(2L);
+    v25.setHomeEntityId(2L);
+    MapHex v26 = new MapHex(this, 26, "Spiritgathers", 1.0F, 3);
+    v26.addNearHexes(18, 25, 34, 35, 27, 19);
+    v26.setPresenceStringOne(" listens at ");
+    v26.setHomeEntityId(2L);
+    MapHex v27 = new MapHex(this, 27, "Weirdpeaks Fall", 2.0F, 0);
+    v27.addNearHexes(19, 26, 35, 36, 28, 20);
+    v27.setPresenceStringOne(" is traversing the ");
+    MapHex v28 = new MapHex(this, 28, "Spring Valleys", 1.0F, 0);
+    v28.addNearHexes(20, 27, 36, 37, 38, 29);
+    v28.setPresenceStringOne(" wanders the ");
+    MapHex v29 = new MapHex(this, 29, "Eaglespirit Glacier", 2.0F, 3);
+    v29.addNearHexes(21, 20, 28, 38, 39, 30);
+    v29.setPresenceStringOne(" is stuck in the ");
+    MapHex v30 = new MapHex(this, 30, "Wintertree Hills", 1.0F, 0);
+    v30.addNearHexes(22, 21, 29, 39, 40, 31);
+    v30.setPresenceStringOne(" hunts the ");
+    v30.setHomeEntityId(4L);
+    v30.setSpawnEntityId(11L);
+    MapHex v31 = new MapHex(this, 31, "Bloodsucker March", 2.0F, 2);
+    v31.addNearHexes(23, 22, 30, 40, 41, 32);
+    v31.setPresenceStringOne(" is stuck in the ");
+    v31.setHomeEntityId(4L);
+    MapHex v32 = new MapHex(this, 32, "Den Of The Deathcrawler", 1.0F, 0);
+    v32.addNearHexes(23, 31, 41, 42, 43, 33);
+    v32.setPresenceStringOne(" explores the ");
+    v32.setHomeEntityId(4L);
+    v32.setSpawnEntityId(10L);
+    MapHex v33 = new MapHex(this, 33, "Saltwalk", 2.0F, 2);
+    v33.addNearHexes(32, 24, 42, 34, 25, 41);
+    v33.setPresenceStringOne(" survives the ");
+    v33.setHomeEntityId(2L);
+    MapHex v34 = new MapHex(this, 34, "Mount Creation", 2.0F, 0);
+    v34.addNearHexes(33, 42, 43, 35, 26, 25);
+    v34.setPresenceStringOne(" climbs ");
+    v34.setHomeEntityId(2L);
+    MapHex v35 = new MapHex(this, 35, "Golden Jungle", 2.0F, 2);
+    v35.addNearHexes(34, 43, 44, 36, 27, 26);
+    v35.setPresenceStringOne(" explores the ");
+    v35.setHomeEntityId(2L);
+    MapHex v36 = new MapHex(this, 36, "Mount Assami", 2.0F, 0);
+    v36.addNearHexes(35, 44, 45, 37, 28, 27);
+    v36.setPresenceStringOne(" avoids the rockfalls at ");
+    MapHex v37 = new MapHex(this, 37, "Humid Hills", 1.0F, 0);
+    v37.addNearHexes(36, 45, 46, 47, 38, 28);
+    v37.setPresenceStringOne(" travels through the ");
+    
+    v37.setHomeEntityId(1L);
+    MapHex v38 = new MapHex(this, 38, "Deadends", 2.0F, 1);
+    v38.addNearHexes(28, 37, 47, 48, 39, 29);
+    v38.setPresenceStringOne(" looks for a way through the ");
+    MapHex v39 = new MapHex(this, 39, "Foulwater Ices", 2.0F, 0);
+    v39.addNearHexes(29, 38, 48, 49, 40, 30);
+    v39.setPresenceStringOne(" swims through the ");
+    MapHex v40 = new MapHex(this, 40, "Rusty Daggers", 2.0F, 0);
+    v40.addNearHexes(30, 39, 49, 50, 41, 31);
+    v40.setPresenceStringOne(" walks the ");
+    v40.setSpawnEntityId(4L);
+    v40.setHomeEntityId(4L);
+    MapHex v41 = new MapHex(this, 41, "Broken Fingernails", 2.0F, 0);
+    v41.addNearHexes(31, 40, 50, 32, 24, 33);
+    v41.setPresenceStringOne(" traverses the ");
+    v41.setHomeEntityId(4L);
+    MapHex v42 = new MapHex(this, 42, "Flamestrike Desert", 1.0F, 0);
+    v42.addNearHexes(16, 23, 32, 33, 34, 43);
+    v42.setPresenceStringOne(" explores the ");
+    v42.setHomeEntityId(2L);
+    MapHex v43 = new MapHex(this, 43, "Western Spurs", 2.0F, 0);
+    v43.addNearHexes(42, 23, 51, 44, 35, 34);
+    v43.setPresenceStringOne(" climbs the ");
+    MapHex v44 = new MapHex(this, 44, "Drakespirit Gardens", 2.0F, 4);
+    v44.addNearHexes(43, 51, 52, 45, 36, 35);
+    v44.setPresenceStringOne(" visits the ");
+    MapHex v45 = new MapHex(this, 45, "Jagged Rise", 1.0F, 2);
+    v45.addNearHexes(44, 52, 53, 46, 37, 36);
+    v45.setPresenceStringOne(" is traversing the ");
+    v45.setHomeEntityId(1L);
+    MapHex v46 = new MapHex(this, 46, "The Myriad", 1.0F, 0);
+    v46.addNearHexes(45, 53, 54, 55, 47, 37);
+    v46.setPresenceStringOne(" lingers in ");
+    v46.setSpawnEntityId(1L);
+    v46.setHomeEntityId(1L);
+    MapHex v47 = new MapHex(this, 47, "Forest Of The Dreadwalkers", 1.0F, 0);
+    v47.addNearHexes(37, 46, 55, 56, 48, 38);
+    v47.setPresenceStringOne(" explores the ");
+    v47.setHomeEntityId(1L);
+    MapHex v48 = new MapHex(this, 48, "Misthollow Flats", 1.0F, 0);
+    v48.addNearHexes(38, 47, 56, 57, 49, 39);
+    v48.setPresenceStringOne(" is in the ");
+    MapHex v49 = new MapHex(this, 49, "Home Of The Treekeeper", 1.0F, 0);
+    v49.addNearHexes(39, 48, 57, 50, 40, 24);
+    v49.setPresenceStringOne(" is visiting the ");
+    v49.setSpawnEntityId(7L);
+    MapHex v50 = new MapHex(this, 50, "The Fence", 2.0F, 1);
+    v50.addNearHexes(40, 49, 41, 24, 33, 17);
+    v50.setPresenceStringOne(" is trapped at ");
+    
+    v50.setPrepositionString(" at ");
+    v50.setHomeEntityId(4L);
+    MapHex v51 = new MapHex(this, 51, "Bleak Plains", 1.0F, 0);
+    v51.addNearHexes(43, 44, 52, 16, 23, 9);
+    v51.setPresenceStringOne(" is walking the ");
+    MapHex v52 = new MapHex(this, 52, "Deforestation", 1.0F, 0);
+    v52.addNearHexes(44, 51, 45, 53, 4, 9);
+    v52.setPresenceStringOne(" is passing the ");
+    v52.setHomeEntityId(1L);
+    MapHex v53 = new MapHex(this, 53, "The Mawpits", 2.0F, 2);
+    v53.addNearHexes(52, 45, 46, 54, 1, 4);
+    v53.setPresenceStringOne(" is exploring the ");
+    v53.setHomeEntityId(1L);
+    MapHex v54 = new MapHex(this, 54, "Stompinggrounds", 1.0F, 0);
+    v54.addNearHexes(1, 2, 53, 46, 55, 4);
+    v54.setPresenceStringOne(" runs through ");
+    v54.setHomeEntityId(1L);
+    v54.setSpawnEntityId(12L);
+    MapHex v55 = new MapHex(this, 55, "Glowing Shrubs", 1.0F, 0);
+    v55.addNearHexes(46, 54, 47, 56, 5, 2);
+    v55.setPresenceStringOne(" walks among the ");
+    v55.setHomeEntityId(1L);
+    v55.setPrepositionString(" among the ");
+    MapHex v56 = new MapHex(this, 56, "Stargazers' Hollows", 1.0F, 0);
+    v56.addNearHexes(47, 55, 48, 57, 5, 10);
+    v56.setPresenceStringOne(" visits the ");
+    v56.setHomeEntityId(1L);
+    MapHex v57 = new MapHex(this, 57, "Withering Marble", 1.0F, 0);
+    v57.addNearHexes(49, 48, 56, 10, 24, 5);
+    v57.setPresenceStringOne(" walks the ");
+  }
+  
+  public void generateEntities()
+  {
+    loadEntityData();
+    loadEntitySkills();
+    if (!getCurrentScenario().loadCurrentScenario()) {
+      nextScenario();
+    }
+  }
+  
+  String getMapSpecialWinEffect()
+  {
+    if (!doesEntityExist(5))
+    {
+      if (getCollictblesRequiredToWin() > 0) {
+        return "If Libila collects these, she will awake the Wurm!";
+      }
+      return "If Libila acquires it, she will awake the Wurm!";
+    }
+    return "";
+  }
+  
+  void checkSpecialMapWinCases(EpicEntity winner)
+  {
+    if (winner.getId() == 4L) {
+      if (!isWurmAwake())
+      {
+        EpicEntity Wurm = new EpicEntity(this, 5L, "Wurm", 4, 10.0F, 10.0F);
+        MapHex mh = getSpawnHex(Wurm);
+        int sp = 0;
+        if (mh != null) {
+          sp = mh.getId();
+        }
+        Wurm.createEntity(sp);
+        broadCast("Terror strikes the hearts of mortals as Libila has awoken the Wurm!");
+      }
+    }
+  }
+  
+  boolean isWurmAwake()
+  {
+    return doesEntityExist(5);
+  }
+  
+  final void nextScenario()
+  {
+    getCurrentScenario().saveScenario(false);
+    
+    setImpossibleWinConditions();
+    incrementScenarioNumber();
+    switch (getScenarioNumber())
+    {
+    case 1: 
+      generateRandomScenario();
+      
+      break;
+    default: 
+      generateRandomScenario();
+    }
+  }
+  
+  int getRandomReason()
+  {
+    return rand.nextInt(20);
+  }
+  
+  EpicEntity charmEnemyEntity(EpicEntity entity)
+  {
+    EpicEntity[] allents = getAllEntities();
+    LinkedList<EpicEntity> allies = new LinkedList();
+    for (EpicEntity e : allents) {
+      if ((e.isAlly()) && (e.getCompanion() != entity)) {
+        allies.add(e);
+      }
+    }
+    EpicEntity stolen = null;
+    if (allies.size() > 0)
+    {
+      stolen = (EpicEntity)allies.get(rand.nextInt(allies.size()));
+      stolen.setCompanion(entity);
+    }
+    return stolen;
+  }
+  
+  EpicEntity returnCharmedEnemyEntity(EpicEntity entity)
+  {
+    EpicEntity stolen = null;
+    switch ((int)entity.getId())
+    {
+    case 1: 
+      stolen = getEntity(7L);
+      break;
+    case 3: 
+      stolen = getEntity(6L);
+      break;
+    case 2: 
+      stolen = getEntity(9L);
+      break;
+    case 4: 
+      stolen = getEntity(8L);
+      break;
+    }
+    if ((stolen != null) && (stolen.getCompanion() != entity)) {
+      stolen.setCompanion(entity);
+    } else {
+      stolen = null;
+    }
+    return stolen;
+  }
+  
+  public void setWinEffects(EpicEntity entity, String collName, int nums)
+  {
+    EpicEntity e;
+    HashMap<Integer, EpicEntity.SkillVal> skills;
+    Iterator localIterator;
+    EpicEntity.SkillVal sv;
+    for (e : getAllEntities()) {
+      if ((e.isDeity()) && (e != entity))
+      {
+        skills = e.getAllSkills();
+        for (localIterator = skills.keySet().iterator(); localIterator.hasNext();)
+        {
+          int id = ((Integer)localIterator.next()).intValue();
+          
+          sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+          if (sv.getCurrentVal() > sv.getDefaultVal()) {
+            e.setSkill(id, sv.getCurrentVal() - (100.0F - sv.getCurrentVal()) / 100.0F);
+          }
+        }
+      }
+    }
+    MapHex gatherPlace = getSpawnHex(entity);
+    if (getHexNumRequiredToWin() > 0) {
+      gatherPlace = getMapHex(getHexNumRequiredToWin());
+    }
+    String gatherPlaceS = "Home";
+    if (gatherPlace != null) {
+      gatherPlaceS = gatherPlace.getName();
+    }
+    String collMultipleName = collName;
+    if (nums > 1) {
+      collMultipleName = collName + "s";
+    }
+    String toBroadCast = entity.getName() + " has gathered the " + collMultipleName + " required at " + gatherPlaceS + ".";
+    
+    broadCast(entity.getName() + " has gathered the " + collMultipleName + " required at " + gatherPlaceS + ".");
+    
+    applyDeityScenarioReward(entity, toBroadCast, collMultipleName);
+    if (!entity.isWurm())
+    {
+      Deity deity = Deities.getDeity((int)entity.getId());
+      if (deity != null)
+      {
+        Object allHelpers = deity.getHelpers();
+        float maxHelperVal = 0.0F;
+        for (Float f : ((ConcurrentHashMap)allHelpers).values()) {
+          if (f.floatValue() > maxHelperVal) {
+            maxHelperVal = f.floatValue();
+          }
+        }
+        long tierOneWinner = getWinningHelper((ConcurrentHashMap)allHelpers, 0.8F, 300);
+        if (tierOneWinner > -10L)
+        {
+          float winnerVal = ((Float)((ConcurrentHashMap)allHelpers).get(Long.valueOf(tierOneWinner))).floatValue();
+          int randomTomeId = 795 + Server.rand.nextInt(16);
+          if ((winnerVal >= maxHelperVal * 0.95F) && 
+            (Server.rand.nextInt(50) == 0)) {
+            randomTomeId = Server.rand.nextInt(5) == 0 ? 794 : 465;
+          }
+          sendWinnerItem(deity, tierOneWinner, randomTomeId, false);
+          ((ConcurrentHashMap)allHelpers).replace(Long.valueOf(tierOneWinner), Float.valueOf(0.0F));
+          if ((randomTomeId == 794) || (randomTomeId == 465)) {
+            return;
+          }
+        }
+        long tierTwoWinner = -10L;
+        for (int i = 0; i < 3; i++)
+        {
+          tierTwoWinner = getWinningHelper((ConcurrentHashMap)allHelpers, 0.5F, 300);
+          if (tierTwoWinner > -10L)
+          {
+            int randomTomeId = 795 + Server.rand.nextInt(16);
+            sendWinnerItem(deity, tierTwoWinner, randomTomeId, true);
+            ((ConcurrentHashMap)allHelpers).replace(Long.valueOf(tierTwoWinner), Float.valueOf(0.0F));
+          }
+        }
+        long tierThreeWinner = -10L;
+        for (int i = 0; i < 5; i++)
+        {
+          tierThreeWinner = getWinningHelper((ConcurrentHashMap)allHelpers, 0.0F, 300);
+          if (tierThreeWinner > -10L)
+          {
+            boolean fragment = Server.rand.nextBoolean();
+            
+            int randomTomeId = fragment ? 795 + Server.rand.nextInt(16) : 837;
+            sendWinnerItem(deity, tierThreeWinner, randomTomeId, fragment);
+            ((ConcurrentHashMap)allHelpers).replace(Long.valueOf(tierThreeWinner), Float.valueOf(0.0F));
+          }
+        }
+      }
+    }
+  }
+  
+  private void applyDeityScenarioReward(EpicEntity entity, String toBroadCast, String collMultipleName)
+  {
+    String rest = "";
+    HashMap<Integer, EpicEntity.SkillVal> skills = entity.getAllSkills();
+    String nrest;
+    switch (getReasonAndEffectInt())
+    {
+    case 0: 
+      if (entity.isWurm()) {
+        rest = "The Wurm punishes you all!";
+      } else {
+        rest = entity.getName() + " uses the " + collMultipleName + " aggressively.";
+      }
+      broadCast(rest);
+      break;
+    case 1: 
+      if (entity.isWurm()) {
+        rest = "The Wurm swallows the " + collMultipleName + " whole!";
+      } else {
+        rest = entity.getName() + " stores the " + collMultipleName + " in a secret place.";
+      }
+      broadCast(rest);
+      break;
+    case 2: 
+      if (entity.isWurm()) {
+        rest = "The Wurm relishes in your pain!";
+      } else {
+        rest = entity.getName() + " makes good use of the " + collMultipleName + ".";
+      }
+      broadCast(rest);
+      break;
+    case 3: 
+    case 4: 
+      if (entity.isWurm()) {
+        rest = "The Wurm punishes you all!";
+      } else {
+        rest = entity.getName() + " will use the " + collMultipleName + " instead.";
+      }
+      broadCast(rest);
+      
+      EpicEntity wasStolen1 = returnCharmedEnemyEntity(entity);
+      if (wasStolen1 != null)
+      {
+        String nrest = wasStolen1.getName() + " is convinced to return to the side of " + entity.getName() + ".";
+        broadCast(nrest);
+        rest = rest + " " + nrest;
+      }
+      break;
+    case 5: 
+      if (entity.isWurm()) {
+        rest = "Wurm releases aggravated souls all over the lands.";
+      } else {
+        rest = entity.getName() + " directs aggravated souls at the enemy.";
+      }
+      broadCast(rest);
+      setCreatureController(74, entity.getId());
+      break;
+    case 6: 
+    case 9: 
+      if (entity.isWurm()) {
+        rest = "Wurm uses the power gained to influence Valrei!";
+      } else {
+        rest = entity.getName() + " tries to gain influence on Valrei!";
+      }
+      broadCast(rest);
+      
+      EpicEntity stolen = charmEnemyEntity(entity);
+      if (stolen != null)
+      {
+        nrest = stolen.getName() + " is charmed by the power of " + entity.getName() + " and switches sides!";
+        broadCast(nrest);
+        rest = rest + " " + nrest;
+      }
+      break;
+    case 7: 
+      if (entity.isWurm())
+      {
+        rest = "The Wurm increases its power even more!";
+      }
+      else
+      {
+        rest = "The power of the " + collMultipleName + " is used by " + entity.getName() + " to grow in power";
+        if (isWurmAwake()) {
+          rest = rest + " and weaken the Wurm.";
+        } else {
+          rest = rest + ".";
+        }
+      }
+      broadCast(rest);
+      for (nrest = skills.keySet().iterator(); nrest.hasNext();)
+      {
+        id = ((Integer)nrest.next()).intValue();
+        
+        EpicEntity.SkillVal sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+        entity.setSkill(id, sv.getCurrentVal() + (100.0F - sv.getCurrentVal()) / 200.0F);
+      }
+      int id;
+      if ((isWurmAwake()) && (!entity.isWurm()))
+      {
+        EpicEntity wurm = getEntity(5L);
+        if (wurm != null) {
+          for (id = skills.keySet().iterator(); id.hasNext();)
+          {
+            int id = ((Integer)id.next()).intValue();
+            
+            EpicEntity.SkillVal sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+            wurm.setSkill(id, sv.getCurrentVal() - (100.0F - sv.getCurrentVal()) / 25.0F);
+          }
+        }
+        rest = "Wurm is weakened.";
+        broadCast(rest);
+      }
+      break;
+    case 8: 
+      if (entity.isWurm()) {
+        rest = "Those were needed to keep the Demons from Sol at bay!";
+      } else {
+        rest = entity.getName() + " now controls the Demons from Sol!";
+      }
+      broadCast(rest);
+      setCreatureController(72, entity.getId());
+      break;
+    case 10: 
+      rest = entity.getName() + " receives significant knowledge from using the " + collMultipleName + ".";
+      broadCast(rest);
+      
+      entity.increaseRandomSkill(100.0F);
+      entity.increaseRandomSkill(100.0F);
+      break;
+    case 11: 
+      rest = entity.getName() + " now controls the Eagle Spirits!";
+      broadCast(rest);
+      setCreatureController(77, entity.getId());
+      break;
+    case 12: 
+    case 14: 
+      rest = "The deities are weakened as Valrei is struck with a mysterious disease.";
+      broadCast(rest);
+      diseaseAllBut(entity);
+      break;
+    case 13: 
+      rest = entity.getName() + " now commands the Deathcrawler's minions!";
+      broadCast(rest);
+      setCreatureController(73, entity.getId());
+      break;
+    case 15: 
+      rest = entity.getName() + " now commands the sons of Nogump!";
+      broadCast(rest);
+      setCreatureController(75, entity.getId());
+      break;
+    case 16: 
+      rest = entity.getName() + " grows from the immense power of the " + collMultipleName + ".";
+      broadCast(rest);
+      for (int i = 0; i < 4; i++) {
+        entity.increaseRandomSkill(100.0F);
+      }
+      break;
+    case 17: 
+      rest = entity.getName() + " now controls the Spirit Drakes!";
+      broadCast(rest);
+      setCreatureController(76, entity.getId());
+      break;
+    case 18: 
+      rest = entity.getName() + " attempts to disrupt Valrei with the newfound power from the " + collMultipleName + ".";
+      broadCast(rest);
+      for (int i = 0; i < 4; i++) {
+        entity.increaseRandomSkill(100.0F);
+      }
+      EpicEntity charmed = charmEnemyEntity(entity);
+      if (charmed != null)
+      {
+        String nrest = charmed.getName() + " is charmed by the power of " + entity.getName() + " and switches sides!";
+        broadCast(nrest);
+        rest = rest + " " + nrest;
+      }
+      break;
+    case 19: 
+      int additionalRoll = rand.nextInt(5);
+      switch (additionalRoll)
+      {
+      case 0: 
+      case 1: 
+        rest = entity.getName() + " unlocks their hidden potential from using the " + collMultipleName + ".";
+        broadCast(rest);
+        for (int i = 0; i < 6; i++) {
+          entity.increaseRandomSkill(75.0F);
+        }
+        break;
+      case 2: 
+      case 3: 
+        rest = entity.getName() + " reveals some true power from within the " + collMultipleName + ".";
+        broadCast(rest);
+        for (int i = 0; i < 6; i++) {
+          entity.increaseRandomSkill(50.0F);
+        }
+        break;
+      case 4: 
+        rest = entity.getName() + " will rule both heaven and earth and may promote an ally!";
+        broadCast(rest);
+        for (int i = 0; i < 6; i++) {
+          entity.increaseRandomSkill(50.0F);
+        }
+        crushAllBut(entity);
+        
+        Effectuator.promoteImmortal(entity.getId());
+      }
+      break;
+    }
+    WcEpicEvent wce = new WcEpicEvent(WurmId.getNextWCCommandId(), getReasonAndEffectInt(), entity.getId(), 0, 0, toBroadCast + " " + rest, true);
+    
+    wce.sendFromLoginServer();
+  }
+  
+  private void sendWinnerItem(Deity deity, long winnerId, int itemId, boolean fragment)
+  {
+    PlayerInfo pinf = PlayerInfoFactory.getPlayerInfoWithWurmId(winnerId);
+    logger.log(Level.INFO, winnerId + " won the prize of " + itemId + " from " + deity.getName());
+    if (pinf != null)
+    {
+      if (!pinf.loaded) {
+        try
+        {
+          pinf.load();
+        }
+        catch (IOException iox)
+        {
+          logger.log(Level.WARNING, iox.getMessage(), iox);
+        }
+      }
+      WcEpicEvent wcwin = new WcEpicEvent(WurmId.getNextWCCommandId(), 0, pinf.wurmId, itemId, fragment ? 5 : 4, deity.getName(), false);
+      wcwin.sendFromLoginServer();
+    }
+  }
+  
+  private long getWinningHelper(ConcurrentHashMap<Long, Float> allHelpers, float tierPercentage, int ticketCost)
+  {
+    HashMap<Long, Integer> ticketCounts = new HashMap();
+    
+    float maxHelperVal = 0.0F;
+    for (Iterator localIterator = allHelpers.values().iterator(); localIterator.hasNext();)
+    {
+      f = (Float)localIterator.next();
+      if (f.floatValue() > maxHelperVal) {
+        maxHelperVal = f.floatValue();
+      }
+    }
+    Float f;
+    int totalTickets = 0;
+    for (Long l : allHelpers.keySet()) {
+      if (((Float)allHelpers.get(l)).floatValue() >= maxHelperVal * tierPercentage)
+      {
+        totalTier = ((Float)allHelpers.get(l)).floatValue() - maxHelperVal * tierPercentage;
+        int ticketCount = (int)(totalTier / ticketCost);
+        totalTickets += ticketCount;
+        ticketCounts.put(l, Integer.valueOf(ticketCount));
+      }
+    }
+    float totalTier;
+    if (totalTickets > 0)
+    {
+      int currentTicket = 0;
+      long[] tickets = new long[totalTickets];
+      for (Long l : ticketCounts.keySet()) {
+        for (int i = 0; i < ((Integer)ticketCounts.get(l)).intValue(); i++) {
+          tickets[(currentTicket++)] = l.longValue();
+        }
+      }
+      return tickets[Server.rand.nextInt(totalTickets)];
+    }
+    return -10L;
+  }
+  
+  private void diseaseAllBut(EpicEntity winner)
+  {
+    logger.info("Disease all but the winning epic entity: " + winner.getName());
+    
+    EpicEntity[] entits = getAllEntities();
+    EpicEntity entity;
+    Iterator localIterator;
+    HashMap<Integer, EpicEntity.SkillVal> skills;
+    for (entity : entits) {
+      if (entity != winner)
+      {
+        HashMap<Integer, EpicEntity.SkillVal> skills;
+        if ((entity.isDeity()) || (entity.isWurm())) {
+          if (!entity.isFriend(winner))
+          {
+            skills = entity.getAllSkills();
+            for (localIterator = skills.keySet().iterator(); localIterator.hasNext();)
+            {
+              int id = ((Integer)localIterator.next()).intValue();
+              
+              EpicEntity.SkillVal sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+              entity.setSkill(id, sv.getCurrentVal() - (100.0F - sv.getCurrentVal()) / 100.0F);
+            }
+          }
+        }
+        if (entity.isDemigod())
+        {
+          skills = entity.getAllSkills();
+          for (localIterator = skills.keySet().iterator(); localIterator.hasNext();)
+          {
+            int id = ((Integer)localIterator.next()).intValue();
+            
+            EpicEntity.SkillVal sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+            entity.setSkill(id, sv.getCurrentVal() - (100.0F - sv.getCurrentVal()) / 100.0F);
+          }
+        }
+      }
+    }
+  }
+  
+  private void crushAllBut(EpicEntity winner)
+  {
+    logger.info("Crushing all but the winning epic entity: " + winner.getName());
+    
+    setCreatureController(74, winner.getId());
+    setCreatureController(76, winner.getId());
+    setCreatureController(77, winner.getId());
+    setCreatureController(75, winner.getId());
+    setCreatureController(73, winner.getId());
+    setCreatureController(72, winner.getId());
+    
+    EpicEntity[] entits = getAllEntities();
+    EpicEntity entity;
+    Iterator localIterator;
+    HashMap<Integer, EpicEntity.SkillVal> skills;
+    for (entity : entits) {
+      if (entity != winner)
+      {
+        HashMap<Integer, EpicEntity.SkillVal> skills;
+        if ((entity.isDeity()) || (entity.isWurm())) {
+          if (!entity.isFriend(winner))
+          {
+            skills = entity.getAllSkills();
+            for (localIterator = skills.keySet().iterator(); localIterator.hasNext();)
+            {
+              int id = ((Integer)localIterator.next()).intValue();
+              
+              EpicEntity.SkillVal sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+              entity.setSkill(id, sv.getCurrentVal() - (100.0F - sv.getCurrentVal()) / 50.0F);
+            }
+          }
+        }
+        if (entity.isDemigod()) {
+          if (!entity.isFriend(winner)) {
+            if (rand.nextInt(15) == 0)
+            {
+              broadCast(entity.getName() + " is put to eternal sleep and dismissed to the void!");
+              destroyEntity(entity);
+            }
+            else
+            {
+              if (entity.getMapHex() != null) {
+                broadCast(entity.getName() + " is spared and will stay in " + entity.getMapHex().getName() + " for now.");
+              } else {
+                broadCast(entity.getName() + " is spared and will stay on Valrei for now.");
+              }
+              skills = entity.getAllSkills();
+              for (localIterator = skills.keySet().iterator(); localIterator.hasNext();)
+              {
+                int id = ((Integer)localIterator.next()).intValue();
+                
+                EpicEntity.SkillVal sv = (EpicEntity.SkillVal)skills.get(Integer.valueOf(id));
+                entity.setSkill(id, sv.getCurrentVal() - (100.0F - sv.getCurrentVal()) / 50.0F);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  String getReason(int reasonId, boolean many)
+  {
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    String firstPart;
+    switch (reasonId)
+    {
+    case 0: 
+      String firstPart;
+      if (many) {
+        firstPart = "If we acquire these we will gain immense strength!";
+      } else {
+        firstPart = "If we acquire this we will gain immense strength!";
+      }
+      break;
+    case 1: 
+      String firstPart;
+      if (many) {
+        firstPart = "These can be used to deal a severe blow to our enemies!";
+      } else {
+        firstPart = "It can be used to deal a severe blow to our enemies!";
+      }
+      break;
+    case 2: 
+      String firstPart;
+      if (many) {
+        firstPart = "If we aquire these we will gain considerable power!";
+      } else {
+        firstPart = "If we aquire this we will gain considerable power!";
+      }
+      break;
+    case 3: 
+      String firstPart;
+      if (many) {
+        firstPart = "These must not fall into the claws of the Wurm!";
+      } else {
+        firstPart = "This must not fall into the claws of the Wurm!";
+      }
+      break;
+    case 4: 
+      String firstPart;
+      if (many) {
+        firstPart = "The power of these are not to be underestimated!";
+      } else {
+        firstPart = "The power of this one is not to be underestimated!";
+      }
+      break;
+    case 5: 
+      String firstPart;
+      if (many) {
+        firstPart = "They will contain soul traces of utter importance!";
+      } else {
+        firstPart = "It will contain soul traces of utter importance!";
+      }
+      break;
+    case 6: 
+      String firstPart;
+      if (many) {
+        firstPart = "Woe befalls our enemies if we lay our hands on them!";
+      } else {
+        firstPart = "Woe befalls our enemies if we lay our hands on it!";
+      }
+      break;
+    case 7: 
+      String firstPart;
+      if (many) {
+        firstPart = "Apparently, these can be used to diminish Wurm's power.";
+      } else {
+        firstPart = "Apparently, this can be used to diminish Wurm's power.";
+      }
+      break;
+    case 8: 
+      String firstPart;
+      if (many) {
+        firstPart = "These are needed to keep the Demons from Sol at bay!";
+      } else {
+        firstPart = "This is needed to keep the Demons from Sol at bay!";
+      }
+      break;
+    case 9: 
+      String firstPart;
+      if (many) {
+        firstPart = "We can use these to erupt our enemy lands!";
+      } else {
+        firstPart = "We can use it to erupt our enemy lands!";
+      }
+      break;
+    case 10: 
+      String firstPart;
+      if (many) {
+        firstPart = "These are said to be truly worth dying for.";
+      } else {
+        firstPart = "It is said that this one is truly worth dying for.";
+      }
+      break;
+    case 11: 
+      String firstPart;
+      if (many) {
+        firstPart = "These may cause mayhem if used by the wrong hands!";
+      } else {
+        firstPart = "It may cause mayhem if used by the wrong hands!";
+      }
+      break;
+    case 12: 
+      String firstPart;
+      if (many) {
+        firstPart = "Meteors will rain down on our enemies if we get hold of these!";
+      } else {
+        firstPart = "Meteors will rain down on our enemies if we get hold of this!";
+      }
+      break;
+    case 13: 
+      String firstPart;
+      if (many) {
+        firstPart = "These are used to protect us from the Deathcrawler's minions!";
+      } else {
+        firstPart = "It is used to protect us from the Deathcrawler's minions!";
+      }
+      break;
+    case 14: 
+      String firstPart;
+      if (many) {
+        firstPart = "Unless we recover these, we will be severely weakened!";
+      } else {
+        firstPart = "Unless we recover this, we will be severely weakened!";
+      }
+      break;
+    case 15: 
+      String firstPart;
+      if (many) {
+        firstPart = "We can create world-changing things with these!";
+      } else {
+        firstPart = "We can create world-changing things with this one!";
+      }
+      break;
+    case 16: 
+      String firstPart;
+      if (many) {
+        firstPart = "The insights gained from these now will be magnificent!";
+      } else {
+        firstPart = "The insights gained from this now will be magnificent!";
+      }
+      break;
+    case 17: 
+      String firstPart;
+      if (many) {
+        firstPart = "Great damage would befall us if they end up in enemy hands.";
+      } else {
+        firstPart = "Great damage would befall us if it ends up in enemy hands.";
+      }
+      break;
+    case 18: 
+      String firstPart;
+      if (many) {
+        firstPart = "Whoever finds these will rise in power!";
+      } else {
+        firstPart = "Whoever finds this one will rise in power!";
+      }
+      break;
+    case 19: 
+      String firstPart;
+      if (many) {
+        firstPart = "Immense power awaits for those who find these!";
+      } else {
+        firstPart = "Immense power awaits for those who find this!";
+      }
+      break;
+    default: 
+      String firstPart;
+      if (many) {
+        firstPart = "We cannot allow our enemies to get their hands on these!";
+      } else {
+        firstPart = "We cannot allow our enemies to get their hands on this!";
+      }
+      break;
+    }
+    return firstPart;
+  }
+  
+  public void testValreiFight(Creature performer)
+  {
+    EpicEntity fighter1 = getEntity(Server.rand.nextInt(4) + 1);
+    EpicEntity fighter2 = getEntity(Server.rand.nextInt(4) + 1);
+    while (fighter2 == fighter1) {
+      fighter2 = getEntity(Server.rand.nextInt(4) + 1);
+    }
+    int wins1 = 0;
+    int wins2 = 0;
+    for (int i = 0; i < 1000; i++)
+    {
+      ValreiFight vFight = new ValreiFight(getSpawnHex(fighter1), fighter1, fighter2);
+      ValreiFightHistory fightHistory = vFight.completeFight(true);
+      if (fightHistory.getFightWinner() == fighter1.getId()) {
+        wins1++;
+      } else {
+        wins2++;
+      }
+    }
+    performer.getCommunicator().sendNormalServerMessage("1000 fights completed between " + fighter1.getName() + " and " + fighter2.getName() + ".");
+    performer.getCommunicator().sendNormalServerMessage(fighter1.getName() + " won " + wins1 / 10.0F + "% of fights, " + fighter2
+      .getName() + " won the remaining " + wins2 / 10.0F + "%.");
+  }
+  
+  public void testSingleValreiFight(Creature performer, Item source)
+  {
+    EpicEntity fighter1 = getEntity(source.getData1());
+    EpicEntity fighter2 = getEntity(source.getData2());
+    if (fighter1 == null) {
+      performer.getCommunicator().sendNormalServerMessage("Invalid entity id for fighter 1: " + source.getData1() + ". Set a valid entity in Data1 of the " + source
+        .getName() + ".");
+    } else if (fighter2 == null) {
+      performer.getCommunicator().sendNormalServerMessage("Invalid entity id for fighter 2: " + source.getData2() + ". Set a valid entity in Data2 of the " + source
+        .getName() + ".");
+    } else if (fighter1 == fighter2) {
+      performer.getCommunicator().sendNormalServerMessage("Cannot fight two entities that are the same. Pick a different second entity by setting the Data2 of the " + source
+        .getName() + ".");
+    }
+    if ((fighter1 == null) || (fighter2 == null) || (fighter1 == fighter2)) {
+      return;
+    }
+    ValreiFight vFight = new ValreiFight(getSpawnHex(fighter1), fighter1, fighter2);
+    ValreiFightHistory fightHistory = vFight.completeFight(false);
+    ValreiFightHistoryManager.getInstance().addFight(fightHistory.getFightId(), fightHistory);
+    if (Servers.localServer.LOGINSERVER)
+    {
+      WCValreiMapUpdater updater = new WCValreiMapUpdater(WurmId.getNextWCCommandId(), (byte)5);
+      updater.sendFromLoginServer();
+    }
+    performer.getCommunicator().sendNormalServerMessage("Fight complete between " + fighter1.getName() + " and " + fighter2.getName() + ".");
+  }
+}
+
+
+/* Location:              C:\Games\SteamLibrary\steamapps\common\Wurm Unlimited Dedicated Server\server.jar!\target\classes\com\wurmonline\server\epic\Valrei.class
+ * Java compiler version: 8 (52.0)
+ * JD-Core Version:       0.7.1
+ */
